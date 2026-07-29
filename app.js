@@ -510,7 +510,7 @@ function renderTransactions() {
 function loadState() {
   const saved = localStorage.getItem(STORAGE_KEY);
   if (!saved) {
-    return structuredClone(defaultState);
+    return structuredClone(defaultState);https://github.com/wagner201190/Finanzas/blob/main/app.js
   }
 
   try {
