@@ -41,6 +41,7 @@ const defaultState = {
 };
 
 const state = loadState();
+let editingTransactionId = null; // Guardará el ID de la transacción en edición
 
 const currencyFormatter = new Intl.NumberFormat("es-CR", {
   style: "currency",
@@ -65,10 +66,27 @@ const budgetRulesElement = document.querySelector("#budget-rules");
 const topSpendingElement = document.querySelector("#top-spending");
 const categorySummaryElement = document.querySelector("#category-summary");
 
+// Elementos dinámicos para edición en el formulario
+const submitBtn = transactionForm.querySelector("button[type='submit']");
+let cancelEditBtn = document.querySelector("#cancel-edit-btn");
+
 initialize();
 
 function initialize() {
   transactionForm.date.value = new Date().toISOString().slice(0, 10);
+
+  // Crear botón de Cancelar edición si no existe en HTML
+  if (!cancelEditBtn) {
+    cancelEditBtn = document.createElement("button");
+    cancelEditBtn.id = "cancel-edit-btn";
+    cancelEditBtn.type = "button";
+    cancelEditBtn.className = "btn-secondary";
+    cancelEditBtn.textContent = "Cancelar edición";
+    cancelEditBtn.style.display = "none";
+    transactionForm.appendChild(cancelEditBtn);
+
+    cancelEditBtn.addEventListener("click", resetTransactionForm);
+  }
 
   transactionForm.addEventListener("submit", handleTransactionSubmit);
   goalForm.addEventListener("submit", handleGoalSubmit);
@@ -76,7 +94,9 @@ function initialize() {
   closeGoalBtn.addEventListener("click", () => goalDialog.close());
   clearDataBtn.addEventListener("click", resetDemoData);
   goalsListElement.addEventListener("click", handleGoalActions);
-  transactionListElement.addEventListener("click", handleTransactionDelete);
+  
+  // Escuchar tanto editar como eliminar en el historial
+  transactionListElement.addEventListener("click", handleTransactionActions);
 
   render();
 }
@@ -85,25 +105,100 @@ function handleTransactionSubmit(event) {
   event.preventDefault();
 
   const formData = new FormData(transactionForm);
-  const transaction = {
-    id: crypto.randomUUID(),
-    description: String(formData.get("description")).trim(),
-    amount: Number(formData.get("amount")),
-    type: String(formData.get("type")),
-    person: String(formData.get("person")),
-    category: String(formData.get("category")),
-    date: String(formData.get("date")),
-  };
+  const description = String(formData.get("description")).trim();
+  const amount = Number(formData.get("amount"));
+  const type = String(formData.get("type"));
+  const person = String(formData.get("person"));
+  const category = String(formData.get("category"));
+  const date = String(formData.get("date"));
 
-  if (!transaction.description || Number.isNaN(transaction.amount) || transaction.amount <= 0) {
+  if (!description || Number.isNaN(amount) || amount <= 0) {
     return;
   }
 
-  state.transactions.unshift(transaction);
+  if (editingTransactionId) {
+    // Modo Edición: Actualizar registro existente
+    const index = state.transactions.findIndex((t) => t.id === editingTransactionId);
+    if (index !== -1) {
+      state.transactions[index] = {
+        id: editingTransactionId,
+        description,
+        amount,
+        type,
+        person,
+        category,
+        date,
+      };
+    }
+  } else {
+    // Modo Creación: Agregar nuevo registro
+    const newTransaction = {
+      id: crypto.randomUUID(),
+      description,
+      amount,
+      type,
+      person,
+      category,
+      date,
+    };
+    state.transactions.unshift(newTransaction);
+  }
+
   persistState();
+  resetTransactionForm();
+  render();
+}
+
+function resetTransactionForm() {
+  editingTransactionId = null;
   transactionForm.reset();
   transactionForm.date.value = new Date().toISOString().slice(0, 10);
-  render();
+  submitBtn.textContent = "Guardar movimiento";
+  if (cancelEditBtn) {
+    cancelEditBtn.style.display = "none";
+  }
+}
+
+function handleTransactionActions(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLButtonElement)) {
+    return;
+  }
+
+  const transactionId = target.dataset.transactionId;
+  const action = target.dataset.action;
+
+  if (!transactionId) {
+    return;
+  }
+
+  if (action === "delete") {
+    // Eliminar
+    state.transactions = state.transactions.filter((item) => item.id !== transactionId);
+    if (editingTransactionId === transactionId) {
+      resetTransactionForm();
+    }
+    persistState();
+    render();
+  } else if (action === "edit") {
+    // Cargar para Editar
+    const transaction = state.transactions.find((item) => item.id === transactionId);
+    if (!transaction) return;
+
+    editingTransactionId = transaction.id;
+    transactionForm.description.value = transaction.description;
+    transactionForm.amount.value = transaction.amount;
+    transactionForm.type.value = transaction.type;
+    transactionForm.person.value = transaction.person;
+    transactionForm.category.value = transaction.category;
+    transactionForm.date.value = transaction.date;
+
+    submitBtn.textContent = "Actualizar movimiento";
+    cancelEditBtn.style.display = "inline-block";
+
+    // Hacer scroll suave hacia el formulario
+    transactionForm.scrollIntoView({ behavior: "smooth" });
+  }
 }
 
 function handleGoalSubmit(event) {
@@ -159,26 +254,11 @@ function handleGoalActions(event) {
   render();
 }
 
-function handleTransactionDelete(event) {
-  const target = event.target;
-  if (!(target instanceof HTMLButtonElement)) {
-    return;
-  }
-
-  const transactionId = target.dataset.transactionId;
-  if (!transactionId) {
-    return;
-  }
-
-  state.transactions = state.transactions.filter((item) => item.id !== transactionId);
-  persistState();
-  render();
-}
-
 function resetDemoData() {
   localStorage.removeItem(STORAGE_KEY);
   state.transactions = structuredClone(defaultState.transactions);
   state.goals = structuredClone(defaultState.goals);
+  resetTransactionForm();
   persistState();
   render();
 }
@@ -415,8 +495,9 @@ function renderTransactions() {
               <strong class="${transaction.type === "income" ? "positive" : "negative"}">
                 ${sign}${formatCurrency(transaction.amount)}
               </strong>
-              <div>
-                <button class="btn-ghost" data-transaction-id="${transaction.id}" type="button">Eliminar</button>
+              <div style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px;">
+                <button class="btn-ghost" data-action="edit" data-transaction-id="${transaction.id}" type="button">Editar</button>
+                <button class="btn-ghost" data-action="delete" data-transaction-id="${transaction.id}" type="button">Eliminar</button>
               </div>
             </div>
           </div>
