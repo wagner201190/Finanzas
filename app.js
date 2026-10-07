@@ -1,9 +1,14 @@
-const STORAGE_KEY = "finanzas-pareja-app";
+const SUPABASE_URL = "https://rycnbxfzylrewfjrpsm.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_56eR83WRQbWmQKxqDrG2o6Q_TywGh..."; 
+
+// Inicializar cliente de Supabase (usando el script CDN en el HTML)
+const { createClient } = supabase;
+const db = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 const defaultState = {
   transactions: [
     {
-      id: crypto.randomUUID(),
+      id: "demo-1",
       description: "Pago de renta",
       amount: 850000,
       type: "expense",
@@ -12,7 +17,7 @@ const defaultState = {
       date: "2026-03-25",
     },
     {
-      id: crypto.randomUUID(),
+      id: "demo-2",
       description: "Salario mensual",
       amount: 1600000,
       type: "income",
@@ -21,7 +26,7 @@ const defaultState = {
       date: "2026-03-24",
     },
     {
-      id: crypto.randomUUID(),
+      id: "demo-3",
       description: "Mercado de la semana",
       amount: 132400,
       type: "expense",
@@ -32,7 +37,7 @@ const defaultState = {
   ],
   goals: [
     {
-      id: crypto.randomUUID(),
+      id: "goal-1",
       name: "Viaje juntos",
       target: 2400000,
       saved: 900000,
@@ -40,8 +45,12 @@ const defaultState = {
   ],
 };
 
-const state = loadState();
-let editingTransactionId = null; // Guardará el ID de la transacción en edición
+let state = {
+  transactions: [],
+  goals: [],
+};
+
+let editingTransactionId = null;
 
 const currencyFormatter = new Intl.NumberFormat("es-CR", {
   style: "currency",
@@ -66,16 +75,14 @@ const budgetRulesElement = document.querySelector("#budget-rules");
 const topSpendingElement = document.querySelector("#top-spending");
 const categorySummaryElement = document.querySelector("#category-summary");
 
-// Elementos dinámicos para edición en el formulario
 const submitBtn = transactionForm.querySelector("button[type='submit']");
 let cancelEditBtn = document.querySelector("#cancel-edit-btn");
 
 initialize();
 
-function initialize() {
+async function initialize() {
   transactionForm.date.value = new Date().toISOString().slice(0, 10);
 
-  // Crear botón de Cancelar edición si no existe en HTML
   if (!cancelEditBtn) {
     cancelEditBtn = document.createElement("button");
     cancelEditBtn.id = "cancel-edit-btn";
@@ -94,14 +101,60 @@ function initialize() {
   closeGoalBtn.addEventListener("click", () => goalDialog.close());
   clearDataBtn.addEventListener("click", resetDemoData);
   goalsListElement.addEventListener("click", handleGoalActions);
-  
-  // Escuchar tanto editar como eliminar en el historial
   transactionListElement.addEventListener("click", handleTransactionActions);
 
+  // Cargar datos iniciales de Supabase
+  await loadState();
   render();
+
+  // Escuchar cambios en tiempo real desde Supabase (para que se sincronice con Yennifer)
+  db.channel('public:transactions')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'transactions' }, async () => {
+      await loadState();
+      render();
+    })
+    .subscribe();
+
+  db.channel('public:goals')
+    .on('postgres_changes', { event: '*', schema: 'public', table: 'goals' }, async () => {
+      await loadState();
+      render();
+    })
+    .subscribe();
 }
 
-function handleTransactionSubmit(event) {
+async function loadState() {
+  try {
+    const { data: txData, error: txError } = await db.from('transactions').select('*').order('date', { ascending: false });
+    const { data: goalData, error: goalError } = await db.from('goals').select('*');
+
+    if (txError || goalError) {
+      console.error("Error al cargar de Supabase:", txError || goalError);
+      return;
+    }
+
+    state.transactions = txData || [];
+    state.goals = goalData || [];
+
+    // Si está totalmente vacío, cargamos datos por defecto una vez
+    if (state.transactions.length === 0 && state.goals.length === 0) {
+      for (const t of defaultState.transactions) {
+        await db.from('transactions').insert([t]);
+      }
+      for (const g of defaultState.goals) {
+        await db.from('goals').insert([g]);
+      }
+      const { data: newTx } = await db.from('transactions').select('*');
+      const { data: newGoal } = await db.from('goals').select('*');
+      state.transactions = newTx || [];
+      state.goals = newGoal || [];
+    }
+  } catch (err) {
+    console.error("Excepción cargando estado:", err);
+  }
+}
+
+async function handleTransactionSubmit(event) {
   event.preventDefault();
 
   const formData = new FormData(transactionForm);
@@ -117,23 +170,19 @@ function handleTransactionSubmit(event) {
   }
 
   if (editingTransactionId) {
-    // Modo Edición: Actualizar registro existente
-    const index = state.transactions.findIndex((t) => t.id === editingTransactionId);
-    if (index !== -1) {
-      state.transactions[index] = {
-        id: editingTransactionId,
-        description,
-        amount,
-        type,
-        person,
-        category,
-        date,
-      };
+    // Actualizar en Supabase
+    const { error } = await db
+      .from('transactions')
+      .update({ description, amount, type, person, category, date })
+      .eq('id', editingTransactionId);
+
+    if (error) {
+      alert("Error al actualizar la transacción");
+      return;
     }
   } else {
-    // Modo Creación: Agregar nuevo registro
+    // Insertar nuevo en Supabase
     const newTransaction = {
-      id: crypto.randomUUID(),
       description,
       amount,
       type,
@@ -141,11 +190,15 @@ function handleTransactionSubmit(event) {
       category,
       date,
     };
-    state.transactions.unshift(newTransaction);
+    const { error } = await db.from('transactions').insert([newTransaction]);
+    if (error) {
+      alert("Error al guardar la transacción");
+      return;
+    }
   }
 
-  persistState();
   resetTransactionForm();
+  await loadState();
   render();
 }
 
@@ -159,7 +212,7 @@ function resetTransactionForm() {
   }
 }
 
-function handleTransactionActions(event) {
+async function handleTransactionActions(event) {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement)) {
     return;
@@ -173,15 +226,17 @@ function handleTransactionActions(event) {
   }
 
   if (action === "delete") {
-    // Eliminar
-    state.transactions = state.transactions.filter((item) => item.id !== transactionId);
+    const { error } = await db.from('transactions').delete().eq('id', transactionId);
+    if (error) {
+      alert("Error al eliminar");
+      return;
+    }
     if (editingTransactionId === transactionId) {
       resetTransactionForm();
     }
-    persistState();
+    await loadState();
     render();
   } else if (action === "edit") {
-    // Cargar para Editar
     const transaction = state.transactions.find((item) => item.id === transactionId);
     if (!transaction) return;
 
@@ -196,17 +251,15 @@ function handleTransactionActions(event) {
     submitBtn.textContent = "Actualizar movimiento";
     cancelEditBtn.style.display = "inline-block";
 
-    // Hacer scroll suave hacia el formulario
     transactionForm.scrollIntoView({ behavior: "smooth" });
   }
 }
 
-function handleGoalSubmit(event) {
+async function handleGoalSubmit(event) {
   event.preventDefault();
 
   const formData = new FormData(goalForm);
   const goal = {
-    id: crypto.randomUUID(),
     name: String(formData.get("name")).trim(),
     target: Number(formData.get("target")),
     saved: Number(formData.get("saved")),
@@ -216,14 +269,19 @@ function handleGoalSubmit(event) {
     return;
   }
 
-  state.goals.unshift(goal);
-  persistState();
+  const { error } = await db.from('goals').insert([goal]);
+  if (error) {
+    alert("Error al crear meta");
+    return;
+  }
+
   goalForm.reset();
   goalDialog.close();
+  await loadState();
   render();
 }
 
-function handleGoalActions(event) {
+async function handleGoalActions(event) {
   const target = event.target;
   if (!(target instanceof HTMLButtonElement)) {
     return;
@@ -241,25 +299,42 @@ function handleGoalActions(event) {
   }
 
   const step = Math.max(goal.target * 0.1, 1);
+  let newSaved = goal.saved;
 
   if (action === "add") {
-    goal.saved = Math.min(goal.target, goal.saved + step);
+    newSaved = Math.min(goal.target, goal.saved + step);
   }
 
   if (action === "remove") {
-    goal.saved = Math.max(0, goal.saved - step);
+    newSaved = Math.max(0, goal.saved - step);
   }
 
-  persistState();
+  const { error } = await db.from('goals').update({ saved: newSaved }).eq('id', goalId);
+  if (error) {
+    alert("Error al actualizar meta");
+    return;
+  }
+
+  await loadState();
   render();
 }
 
-function resetDemoData() {
-  localStorage.removeItem(STORAGE_KEY);
-  state.transactions = structuredClone(defaultState.transactions);
-  state.goals = structuredClone(defaultState.goals);
+async function resetDemoData() {
+  if (!confirm("¿Deseas reiniciar los datos de prueba?")) return;
+
+  // Borrar todo de las tablas de Supabase
+  await db.from('transactions').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+  await db.from('goals').delete().neq('id', '00000000-0000-0000-0000-000000000000');
+
+  for (const t of defaultState.transactions) {
+    await db.from('transactions').insert([t]);
+  }
+  for (const g of defaultState.goals) {
+    await db.from('goals').insert([g]);
+  }
+
   resetTransactionForm();
-  persistState();
+  await loadState();
   render();
 }
 
@@ -505,29 +580,6 @@ function renderTransactions() {
       `;
     })
     .join("");
-}
-
-function loadState() {
-  const saved = localStorage.getItem(STORAGE_KEY);
-  if (!saved) {
-    return structuredClone(defaultState);
-  }
-
-  try {
-    const parsed = JSON.parse(saved);
-    return {
-      transactions: Array.isArray(parsed.transactions)
-        ? parsed.transactions
-        : structuredClone(defaultState.transactions),
-      goals: Array.isArray(parsed.goals) ? parsed.goals : structuredClone(defaultState.goals),
-    };
-  } catch {
-    return structuredClone(defaultState);
-  }
-}
-
-function persistState() {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
 }
 
 function formatCurrency(value) {
