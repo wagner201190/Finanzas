@@ -1,4 +1,5 @@
-const SUPABASE_URL = "https://rycnbxfzyzlrewfjrpsm.supabase.co";
+
+const SUPABASE_URL = "https://rycnbxfzyzlrewfjrpsm.supabase.co"; // CORRECTO
 const SUPABASE_ANON_KEY = "sb_publishable_56eR83WRQbWmqkxqrG2o6Q_TyWghan8"; 
 
 // Inicializar cliente de Supabase (usando el script CDN en el HTML)
